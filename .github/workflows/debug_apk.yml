@@ -1,153 +1,26 @@
-name: Build & Release Debug APK
+name: Android CI
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
-    inputs:
-      release_title:
-        description: 'Custom title for this release (optional)'
-        required: false
-        default: ''
-
-# Required permissions for GITHUB_TOKEN to create releases and upload release assets
-permissions:
-  contents: write
 
 jobs:
-  build-and-release:
-    name: Build Debug APK & Publish Release
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      # Step 1: Check out the repository
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
         with:
-          fetch-depth: 0
+          distribution: temurin
+          java-version: '21'
 
-      # Step 2: Set up JDK 17
-      - name: Set up Java JDK 17
-        uses: actions/setup-java@v4
+      - name: Build debug APK
+        run: chmod +x ./gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v5
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      # Step 3: Set up Android SDK Command-line Tools and Platform
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      # Step 4: Cache Gradle dependencies and wrapper to accelerate builds
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
-
-      # Step 5: Prepare build environment (Keystore, .env file, executable gradlew)
-      - name: Prepare Build Environment
-        run: |
-          echo "Setting execution permissions for Gradle Wrapper..."
-          chmod +x gradlew || true
-
-          # Create default .env from .env.example for Secrets Gradle Plugin if .env does not exist
-          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
-            echo "Creating .env from .env.example..."
-            cp .env.example .env
-          fi
-
-          # Decode debug.keystore if debug.keystore.base64 is present
-          if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
-            echo "Decoding debug.keystore from debug.keystore.base64..."
-            base64 -d debug.keystore.base64 > debug.keystore
-          fi
-
-      # Step 6: Build the Android Debug APK
-      - name: Build Debug APK
-        run: |
-          ./gradlew assembleDebug --stacktrace
-
-      # Step 7: Inspect and verify APK output (print file size, location, and checksum)
-      - name: Verify and Log APK Details
-        id: apk_info
-        run: |
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$APK_PATH" ]; then
-            echo "::error::APK not found at expected location: $APK_PATH"
-            exit 1
-          fi
-
-          FILE_SIZE=$(ls -lh "$APK_PATH" | awk '{print $5}')
-          RAW_SIZE=$(wc -c < "$APK_PATH" | tr -d ' ')
-          SHA256_HASH=$(sha256sum "$APK_PATH" | awk '{print $1}')
-          
-          echo "=================================================="
-          echo " Android Debug APK Generated Successfully"
-          echo " Location:  $APK_PATH"
-          echo " File Size: $FILE_SIZE ($RAW_SIZE bytes)"
-          echo " SHA-256:   $SHA256_HASH"
-          echo "=================================================="
-
-          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
-          echo "apk_size=$FILE_SIZE" >> "$GITHUB_OUTPUT"
-          echo "apk_hash=$SHA256_HASH" >> "$GITHUB_OUTPUT"
-
-      # Step 8: Generate dynamic version tag and release metadata
-      - name: Determine Version Tag & Release Info
-        id: release_meta
-        run: |
-          # Read VERSION_NAME from gradle.properties if present, fallback to 1.0.0
-          VERSION_NAME=$(grep -E "^VERSION_NAME=" gradle.properties | cut -d'=' -f2 | tr -d ' ' || echo "1.0.0")
-          if [ -z "$VERSION_NAME" ]; then
-            VERSION_NAME="1.0.0"
-          fi
-
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          TAG_NAME="v${VERSION_NAME}-${SHORT_SHA}"
-          BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-
-          if [ -n "${{ github.event.inputs.release_title }}" ]; then
-            RELEASE_NAME="${{ github.event.inputs.release_title }} ($TAG_NAME)"
-          else
-            RELEASE_NAME="Debug APK Release - $TAG_NAME"
-          fi
-
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "release_name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
-          echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
-          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-
-      # Step 9: Upload APK as Workflow Artifact (Temporary retention for workflow runs)
-      - name: Upload Debug APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug-apk-${{ steps.release_meta.outputs.tag_name }}
-          path: ${{ steps.apk_info.outputs.apk_path }}
-          retention-days: 14
-
-      # Step 10: Create or Update GitHub Release with the Debug APK attached
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ steps.release_meta.outputs.tag_name }}
-          name: ${{ steps.release_meta.outputs.release_name }}
-          draft: false
-          prerelease: true
-          make_latest: true
-          files: ${{ steps.apk_info.outputs.apk_path }}
-          body: |
-            ### 🤖 Automated Android Debug Build
-            
-            - **Tag**: `${{ steps.release_meta.outputs.tag_name }}`
-            - **App Version**: `${{ steps.release_meta.outputs.version_name }}`
-            - **Commit**: `${{ github.sha }}`
-            - **Build Timestamp**: `${{ steps.release_meta.outputs.build_date }}`
-            - **APK Size**: `${{ steps.apk_info.outputs.apk_size }}`
-            - **SHA-256 Checksum**:
-              ```
-              ${{ steps.apk_info.outputs.apk_hash }}
-              ```
-
-            #### 📦 Download Assets
-            Download the `app-debug.apk` asset below to install and test on your Android device or emulator.
+          name: debug-apk
+          path: app/build/outputs/apk/debug/*.apk
